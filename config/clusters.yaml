@@ -1,0 +1,42 @@
+# Example / local-dev registry. Not used in production -- see
+# helm/naas-discovery/values.yaml for how the real registry is supplied.
+clusters:
+  - id: CAS-ELE-001
+    endpoint: "http://localhost:9001"
+    region: eu-west-1
+    environment: prod
+    provider: internal-a
+    enabled: true
+    priority: 100
+    labels:
+      team: platform
+
+  - id: CAS-DEV-001
+    endpoint: "http://localhost:9002"
+    region: eu-west-1
+    environment: dev
+    provider: internal-a
+    enabled: true
+    priority: 100
+    labels:
+      team: platform
+
+  - id: CAS-DEV-002
+    endpoint: "http://localhost:9003"
+    region: eu-west-1
+    environment: dev
+    provider: internal-a
+    enabled: true
+    priority: 50
+    labels:
+      team: payments
+
+  - id: CAS-DEV-003
+    endpoint: "http://localhost:9004"
+    region: eu-west-1
+    environment: dev
+    provider: internal-b
+    enabled: true
+    priority: 50
+    labels:
+      team: payments

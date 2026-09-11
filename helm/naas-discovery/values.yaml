@@ -1,0 +1,121 @@
+image:
+  repository: cloudspert/naas-discovery
+  tag: "0.1.0"
+  pullPolicy: Always
+
+replicaCount: 1
+
+# Application configuration -> rendered into a ConfigMap and injected as
+# CLUSTER_* environment variables. (See docs/design for what each means.)
+config:
+  logLevel: INFO
+  recommendationMode: priority        # priority | metrics | hybrid
+  recommendationPrecedence: priority  # priority | telemetry (only used if mode=hybrid)
+  capacityThreshold: ""               # empty = unset
+  telemetryModule: none                # none | prometheus | native_api
+  telemetryFailurePolicy: fail_open   # fail_open | fail_closed
+  healthModule: http                   # none | http -- on by default, deliberately
+  healthCheckIntervalSeconds: 30
+  healthCheckTimeoutSeconds: 3
+  authModule: basic
+
+# The cluster registry (§2) -> rendered into a ConfigMap as clusters.yaml.
+# Override at install time, e.g.:
+#   --set-json 'registry.clusters=[{"id":"CAS-ELE-001","endpoint":"https://naas-api.cas-ele-001.example.com","region":"eu-west-1","environment":"prod","provider":"internal-a","priority":100}]'
+registry:
+  clusters: []
+
+# Basic-auth credentials -> rendered into a Secret as a YAML user:pass map.
+# Override at install time:  --set-json 'auth.basicUsers={"admin":"s3cret"}'
+auth:
+  basicUsers:
+    admin: changeme
+
+# Only read when config.telemetryModule=prometheus. Rendered into a
+# Secret (not a ConfigMap) because username/password can be set here --
+# see the design doc §8/§12. Leave username/password empty for an
+# unauthenticated Prometheus.
+telemetry:
+  prometheusUrl: ""
+  username: ""
+  password: ""
+  capacityQuery: ""
+  overrides: []
+  # e.g.:
+  # overrides:
+  #   - name: "CAS-DEV-*"
+  #     prometheusUrl: "https://prometheus-dev.example.com"
+
+serviceAccount:
+  create: true
+  name: ""  # defaults to the release fullname
+
+# Unlike naas-api, this service talks to no Kubernetes API -- no RBAC,
+# no ClusterRole/RoleBinding. The ServiceAccount above exists only for
+# workload identity, not permissions.
+
+# §9's health module (on by default) needs outbound reachability to every
+# enabled cluster's naas-api endpoint. Left disabled by default since
+# whether the namespace's default egress posture already allows it is an
+# open question (design doc §17) -- enable and adjust `to` once confirmed.
+networkPolicy:
+  enabled: false
+  egress: []
+  # e.g.:
+  # egress:
+  #   - to:
+  #       - ipBlock: { cidr: 0.0.0.0/0 }
+  #     ports:
+  #       - protocol: TCP
+  #         port: 443
+
+service:
+  type: ClusterIP
+  port: 8080
+
+# OpenShift Route (set enabled: false on plain Kubernetes and use an Ingress).
+route:
+  enabled: false
+  host: ""
+  labels: {}
+  annotations: {}
+  tls:
+    termination: edge
+
+# Kubernetes Ingress (alternative to the OpenShift Route above, for plain
+# Kubernetes / non-OCP ingress controllers). Enable at most one of route/ingress.
+ingress:
+  enabled: true
+  className: ""
+  labels: {}
+  annotations: {}
+  host: "naas-discovery.example.com"
+  path: "/"
+  pathType: Prefix
+  tls: []
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+podSecurityContext: {}
+securityContext:
+  allowPrivilegeEscalation: false
+  runAsNonRoot: true
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# With a read-only root filesystem, Python still needs a writable temp dir.
+tmpDir:
+  mountPath: /tmp
+  sizeLimit: 64Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

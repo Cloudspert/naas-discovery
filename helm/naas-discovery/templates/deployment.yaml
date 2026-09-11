@@ -1,0 +1,102 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "naas-discovery.fullname" . }}
+  labels:
+    {{- include "naas-discovery.labels" . | nindent 4 }}
+spec:
+  # Not one-per-cluster like naas-api -- a single central deployment.
+  # replicas can scale freely: each pod independently polls/caches health
+  # (§9) with no cross-replica coordination needed.
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "naas-discovery.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "naas-discovery.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "naas-discovery.serviceAccountName" . }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: api
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            # Read-only root FS: pin Python's temp dir to the writable emptyDir.
+            - name: TMPDIR
+              value: {{ .Values.tmpDir.mountPath | quote }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "naas-discovery.fullname" . }}-config
+          volumeMounts:
+            - name: tmp
+              mountPath: {{ .Values.tmpDir.mountPath }}
+            - name: registry-config
+              mountPath: /etc/naas-discovery
+              readOnly: true
+            - name: auth-secret
+              mountPath: /etc/naas-discovery/secrets/auth
+              readOnly: true
+            {{- if eq .Values.config.telemetryModule "prometheus" }}
+            - name: telemetry-secret
+              mountPath: /etc/naas-discovery/secrets/telemetry
+              readOnly: true
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir:
+            {{- with .Values.tmpDir.sizeLimit }}
+            sizeLimit: {{ . }}
+            {{- end }}
+        - name: registry-config
+          configMap:
+            name: {{ include "naas-discovery.fullname" . }}-registry
+        - name: auth-secret
+          secret:
+            secretName: {{ include "naas-discovery.fullname" . }}-auth
+        {{- if eq .Values.config.telemetryModule "prometheus" }}
+        - name: telemetry-secret
+          secret:
+            secretName: {{ include "naas-discovery.fullname" . }}-telemetry
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

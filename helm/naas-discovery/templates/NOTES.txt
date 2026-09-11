@@ -1,0 +1,23 @@
+naas-discovery has been installed.
+
+{{- if .Values.ingress.enabled }}
+Reachable via Ingress at: http{{ if .Values.ingress.tls }}s{{ end }}://{{ .Values.ingress.host }}{{ .Values.ingress.path }}
+{{- else if .Values.route.enabled }}
+Reachable via Route at: {{ .Values.route.host | default "<host assigned by the router>" }}
+{{- else }}
+No Ingress/Route enabled -- reach it with:
+  kubectl port-forward svc/{{ include "naas-discovery.fullname" . }} 8080:{{ .Values.service.port }}
+{{- end }}
+
+Try it:
+  curl -u admin:<password> http://<host>/api/v1/clusters
+
+Swagger UI (Authorize button wired to Basic Auth): /docs
+
+{{- if not (eq .Values.config.healthModule "none") }}
+
+Health checking (§9) is ON: GET /clusters will only return clusters whose
+naas-api /healthz the background poller has confirmed reachable. If every
+cluster in your registry is currently unreachable, /api/v1/clusters will
+return an empty list -- this is expected, not a bug.
+{{- end }}

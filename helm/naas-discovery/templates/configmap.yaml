@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "naas-discovery.fullname" . }}-config
+  labels:
+    {{- include "naas-discovery.labels" . | nindent 4 }}
+data:
+  CLUSTER_LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  CLUSTER_RECOMMENDATION_MODE: {{ .Values.config.recommendationMode | quote }}
+  CLUSTER_RECOMMENDATION_PRECEDENCE: {{ .Values.config.recommendationPrecedence | quote }}
+  {{- if .Values.config.capacityThreshold }}
+  CLUSTER_CAPACITY_THRESHOLD: {{ .Values.config.capacityThreshold | quote }}
+  {{- end }}
+  CLUSTER_TELEMETRY_MODULE: {{ .Values.config.telemetryModule | quote }}
+  CLUSTER_TELEMETRY_FAILURE_POLICY: {{ .Values.config.telemetryFailurePolicy | quote }}
+  CLUSTER_HEALTH_MODULE: {{ .Values.config.healthModule | quote }}
+  CLUSTER_HEALTH_CHECK_INTERVAL_SECONDS: {{ .Values.config.healthCheckIntervalSeconds | quote }}
+  CLUSTER_HEALTH_CHECK_TIMEOUT_SECONDS: {{ .Values.config.healthCheckTimeoutSeconds | quote }}
+  CLUSTER_AUTH_MODULE: {{ .Values.config.authModule | quote }}
+  CLUSTER_REGISTRY_PATH: /etc/naas-discovery/clusters.yaml
+  {{- if eq .Values.config.telemetryModule "prometheus" }}
+  CLUSTER_TELEMETRY_CONFIG_PATH: /etc/naas-discovery/secrets/telemetry/telemetry.yaml
+  {{- end }}
+  CLUSTER_BASIC_AUTH_USERS_FILE: /etc/naas-discovery/secrets/auth/basic-auth-users.yaml
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "naas-discovery.fullname" . }}-registry
+  labels:
+    {{- include "naas-discovery.labels" . | nindent 4 }}
+data:
+  # The registry (§2) -- nothing sensitive, hence a ConfigMap, not a Secret.
+  clusters.yaml: |
+    {{- toYaml (dict "clusters" .Values.registry.clusters) | nindent 4 }}

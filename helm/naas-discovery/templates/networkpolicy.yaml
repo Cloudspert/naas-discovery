@@ -1,0 +1,21 @@
+{{- if .Values.networkPolicy.enabled }}
+# §9's health module (default: on) makes outbound calls to every enabled
+# cluster's naas-api /healthz. Whether the namespace's default egress
+# posture already allows this is an open design question (docs/design
+# §17) -- this template exists so the answer can be "yes, ship a policy"
+# without a code change, once that's confirmed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "naas-discovery.fullname" . }}-egress
+  labels:
+    {{- include "naas-discovery.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "naas-discovery.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    {{- toYaml .Values.networkPolicy.egress | nindent 4 }}
+{{- end }}

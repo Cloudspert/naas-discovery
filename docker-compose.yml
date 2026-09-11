@@ -1,0 +1,43 @@
+# Local development / testing. Same shape as naas-api's docker-compose.yml.
+#
+#   docker compose up app                          # run the API locally
+#   docker compose run --rm tests                   # run everything
+#   docker compose run --rm tests pytest -k health  # filter
+#   docker compose run --rm tests pytest -x -q      # stop on first failure
+#   docker compose build tests                      # rebuild after dep changes
+#
+# The project is bind-mounted for both services, so edits on the host are
+# picked up immediately -- no rebuild needed unless requirements change.
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: naas-discovery
+    ports:
+      - "8080:8080"
+    environment:
+      CLUSTER_REGISTRY_PATH: /app/config/clusters.yaml
+      CLUSTER_BASIC_AUTH_USERS: '{"admin":"changeme"}'
+      # Fixture clusters in config/clusters.yaml don't run a real naas-api,
+      # so the default health filtering would exclude everything -- see
+      # the design doc §13.
+      CLUSTER_HEALTH_MODULE: none
+    volumes:
+      - ./app:/app/app
+      - ./config:/app/config
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+
+  tests:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    image: naas-discovery-tests
+    volumes:
+      - ./:/app
+      - pytest-cache:/app/.pytest_cache
+    command: pytest
+
+volumes:
+  pytest-cache:

@@ -100,6 +100,7 @@ of `provider` values is org-specific and not yet defined here — see §17.
 clusters:
   - id: CAS-ELE-001                          # unique, human-assigned id
     endpoint: "https://naas-api.cas-ele-001.example.com"
+    healthz_endpoint: "https://naas-api.cas-ele-001.example.com/healthz"  # optional — see below
     region: eu-west-1
     environment: prod                        # single value: dev | staging | prod | ...
     provider: internal-a                     # internal designation, NOT a cloud vendor (aws/gcp/azure) — taxonomy is org-specific, see §17
@@ -107,6 +108,13 @@ clusters:
     priority: 100                            # admin-fixed recommendation weight — see §7
     labels: {}                               # open-ended bag for future filters, e.g. {team: payments}
 ```
+
+`healthz_endpoint` is **optional**: §9's health module uses it verbatim
+when present, and falls back to `{endpoint}/healthz` when absent (the
+assumption §9 originally made unconditionally). Most clusters won't need
+to set it — it only matters when a cluster's liveness check is actually
+served somewhere other than `{endpoint}/healthz` (a different port, a
+dedicated probe path behind a different ingress, etc.).
 
 `labels` is deliberately generic — matching the precedent already set in
 naas-api's EgressIP design (labels are caller-owned key/value pairs, not
@@ -226,21 +234,25 @@ recommendation logic — only the source implementation changes.
 
 | Setting | Env var | Default | Purpose |
 |---|---|---|---|
-| `cluster_registry_path` | `APP_CLUSTER_REGISTRY_PATH` | `/etc/naas-discovery/clusters.yaml` | Path to §2's registry file (now also carries each cluster's `priority`) |
-| `recommendation_mode` | `APP_RECOMMENDATION_MODE` | `priority` | `priority` \| `metrics` \| `hybrid` — see §7 |
-| `recommendation_precedence` | `APP_RECOMMENDATION_PRECEDENCE` | `priority` | `priority` \| `telemetry` — only used when `recommendation_mode=hybrid`; which signal leads — see §7 |
-| `capacity_threshold` | `APP_CAPACITY_THRESHOLD` | unset | Headroom cutoff used by §7's priority-precedence gate, once §8 is implemented |
-| `telemetry_module` | `APP_TELEMETRY_MODULE` | `none` | `none` \| `prometheus` \| `native_api` — see §8 |
-| `telemetry_failure_policy` | `APP_TELEMETRY_FAILURE_POLICY` | `fail_open` | `fail_open` \| `fail_closed` — behavior when the telemetry backend is unreachable during ranking, see §7 |
-| `health_module` | `APP_HEALTH_MODULE` | `http` | `none` \| `http` — see §9 |
-| `cluster_health_check_interval_seconds` | `APP_CLUSTER_HEALTH_CHECK_INTERVAL_SECONDS` | `30` | Background poll interval for §9's health cache |
-| `health_check_timeout_seconds` | `APP_HEALTH_CHECK_TIMEOUT_SECONDS` | `3` | Per-cluster `/healthz` request timeout, see §9 |
-| `auth_module` | `APP_AUTH_MODULE` | `basic` | Same as naas-api |
-| `basic_auth_users` | `APP_BASIC_AUTH_USERS` | `{}` | Same as naas-api (JSON map, from env) |
-| `basic_auth_users_file` | `APP_BASIC_AUTH_USERS_FILE` | unset | Path to a YAML file with the same `user: pass` map shape — a **file** alternative to `basic_auth_users`, see §10 |
+| `registry_path` | `CLUSTER_REGISTRY_PATH` | `/etc/naas-discovery/clusters.yaml` | Path to §2's registry file (now also carries each cluster's `priority`) |
+| `recommendation_mode` | `CLUSTER_RECOMMENDATION_MODE` | `priority` | `priority` \| `metrics` \| `hybrid` — see §7 |
+| `recommendation_precedence` | `CLUSTER_RECOMMENDATION_PRECEDENCE` | `priority` | `priority` \| `telemetry` — only used when `recommendation_mode=hybrid`; which signal leads — see §7 |
+| `capacity_threshold` | `CLUSTER_CAPACITY_THRESHOLD` | unset | Headroom cutoff used by §7's priority-precedence gate, once §8 is implemented |
+| `telemetry_module` | `CLUSTER_TELEMETRY_MODULE` | `none` | `none` \| `prometheus` \| `native_api` — see §8 |
+| `telemetry_config_path` | `CLUSTER_TELEMETRY_CONFIG_PATH` | `/etc/naas-discovery/telemetry.yaml` | Path to §8's Prometheus URL + PromQL query template + optional credentials (only read when `telemetry_module=prometheus`). Mounted from a **Secret**, not a ConfigMap — see §8. |
+| `telemetry_failure_policy` | `CLUSTER_TELEMETRY_FAILURE_POLICY` | `fail_open` | `fail_open` \| `fail_closed` — behavior when the telemetry backend is unreachable during ranking, see §7 |
+| `health_module` | `CLUSTER_HEALTH_MODULE` | `http` | `none` \| `http` — see §9 |
+| `health_check_interval_seconds` | `CLUSTER_HEALTH_CHECK_INTERVAL_SECONDS` | `30` | Background poll interval for §9's health cache |
+| `health_check_timeout_seconds` | `CLUSTER_HEALTH_CHECK_TIMEOUT_SECONDS` | `3` | Per-cluster `/healthz` request timeout, see §9 |
+| `auth_module` | `CLUSTER_AUTH_MODULE` | `basic` | Same as naas-api |
+| `basic_auth_users` | `CLUSTER_BASIC_AUTH_USERS` | `{}` | Same as naas-api (JSON map, from env) |
+| `basic_auth_users_file` | `CLUSTER_BASIC_AUTH_USERS_FILE` | unset | Path to a YAML file with the same `user: pass` map shape — a **file** alternative to `basic_auth_users`, see §10 |
 
-Same `APP_`-prefixed, `pydantic-settings`-based pattern as naas-api's
-`app/core/config.py`.
+Same `pydantic-settings`-based pattern as naas-api's `app/core/config.py`
+(`SettingsConfigDict(env_prefix="CLUSTER_", ...)`) — a deliberate choice of
+prefix for this project, not an oversight. Field names themselves stay
+unprefixed (e.g. `registry_path`), so the prefix only ever appears once,
+from `env_prefix`.
 
 ## 6. Modular filter matching
 
@@ -279,7 +291,7 @@ Two independent signals can drive the ranking:
 gets a distinct role, so there's nothing to algorithmically "resolve" when
 they disagree. Two settings control it:
 
-- **`APP_RECOMMENDATION_MODE`** — `priority` \| `metrics` \| `hybrid`. Picks
+- **`CLUSTER_RECOMMENDATION_MODE`** — `priority` \| `metrics` \| `hybrid`. Picks
   the overall strategy:
   - `priority` — rank by `priority` alone. Telemetry is never consulted,
     even if the module (§8) is configured.
@@ -289,20 +301,23 @@ they disagree. Two settings control it:
   - `hybrid` — both signals are in play; which one leads is the second
     setting below.
 
-- **`APP_RECOMMENDATION_PRECEDENCE`** — `priority` \| `telemetry`,
+- **`CLUSTER_RECOMMENDATION_PRECEDENCE`** — `priority` \| `telemetry`,
   **default `priority`**. Only consulted when `mode=hybrid`; decides which
   signal is authoritative and which is the secondary check:
   - `precedence=priority` **(default)** — rank by `priority`; telemetry
     acts only as an eligibility **gate**, not a ranking input — a cluster
-    over `APP_CAPACITY_THRESHOLD` is skipped and the next-highest-priority
-    cluster is tried instead. Telemetry never *reorders*, only *removes
-    from contention*. This is the "coexist by not competing" model:
-    priority answers *what we prefer*, telemetry answers *is that choice
-    usable right now*.
+    with headroom **below** `CLUSTER_CAPACITY_THRESHOLD` (not enough room)
+    is skipped and the next-highest-priority cluster is tried instead.
+    (Confirmed 2026-09-11 — an earlier draft of this section said "over
+    the threshold," which contradicted `CapacityProvider` being *available
+    headroom*; see docs/DEV_LOG.md.) Telemetry never *reorders*, only
+    *removes from contention*. This is the "coexist by not competing"
+    model: priority answers *what we prefer*, telemetry answers *is that
+    choice usable right now*.
   - `precedence=telemetry` — rank by headroom; `priority` becomes the
     tie-break, same behavior as `mode=metrics`.
 
-Defaulting `APP_RECOMMENDATION_PRECEDENCE` to `priority` means the admin's
+Defaulting `CLUSTER_RECOMMENDATION_PRECEDENCE` to `priority` means the admin's
 static intent wins whenever the two disagree, and telemetry can only ever
 **veto** a choice, never **override** it outright.
 
@@ -314,14 +329,14 @@ tie-break — which is harder to explain and audit than either mode above,
 and adds two numbers an admin has to tune. Not implemented; revisit only if
 `mode`/`precedence` prove too coarse in practice.
 
-Selected via `APP_RECOMMENDATION_MODE` + `APP_RECOMMENDATION_PRECEDENCE`
+Selected via `CLUSTER_RECOMMENDATION_MODE` + `CLUSTER_RECOMMENDATION_PRECEDENCE`
 (§5), using the same name-keyed-registry pattern as the auth (§10) and
 telemetry (§8) modules.
 
 ### Telemetry failure policy
 
 If `telemetry_module` (§8) is enabled but unreachable at request time,
-**`APP_TELEMETRY_FAILURE_POLICY`** (§5) decides what happens to the
+**`CLUSTER_TELEMETRY_FAILURE_POLICY`** (§5) decides what happens to the
 ranking, independent of `mode`/`precedence`:
 
 - `fail_open` **(default)** — proceed as if telemetry had reported nothing:
@@ -365,25 +380,99 @@ an env var):
   metric is chosen).
 - `PrometheusCapacityProvider` — queries a configured Prometheus endpoint
   using a **custom PromQL template**, so the actual query is config, not
-  code. Open question: one central Prometheus for the whole fleet, or
-  per-cluster/federated instances (changes whether the template needs a
-  per-cluster Prometheus URL too) — see §17.
+  code — mechanism detailed below.
 - `NativeAPICapacityProvider` — for clusters whose naas-api (or another
   in-cluster API) already exposes usage/capacity directly, call that
   instead of Prometheus.
 - `NoopCapacityProvider` — the `none` default; ranking ignores capacity
   entirely.
 
-Selected via `APP_TELEMETRY_MODULE` (§5), registered the same way naas-api
+Selected via `CLUSTER_TELEMETRY_MODULE` (§5), registered the same way naas-api
 registers auth modules — a name → factory mapping, so adding a third
 provider later is additive.
+
+### `PrometheusCapacityProvider`: the query as a Jinja2 template
+
+The PromQL query lives in **config, not code** — a **file**
+(`CLUSTER_TELEMETRY_CONFIG_PATH`, §5): structured, possibly multi-line, and
+shouldn't require a code change to edit. Because it can now also carry
+credentials (below), the whole file is mounted from a **Secret**, not a
+ConfigMap — unlike `clusters.yaml` (§2), which stays a plain ConfigMap
+since it holds nothing sensitive.
+
+```yaml
+# secrets/telemetry.yaml — Secret-mounted, kept out of version control
+# alongside secrets/basic-auth-users.yaml (§10), unlike config/clusters.yaml
+prometheus_url: "https://prometheus.example.com"    # global default
+username: xxx                                        # optional
+password: yyyy                                       # optional
+capacity_query: |                                    # rendered as a Jinja2 template
+  sum(kube_node_status_allocatable{resource="memory", cluster="{{ cluster_id }}"})
+  - sum(kube_pod_container_resource_requests{resource="memory", cluster="{{ cluster_id }}"})
+
+overrides:                                            # optional, evaluated top to bottom
+  - name: "CAS-DEV-*"          # glob pattern on cluster id — matches every CAS-DEV-nnn cluster
+    prometheus_url: "https://prometheus-cas-dev.example.com"
+    username: xxx                                     # optional, independent of the top-level one
+    password: yyyy                                    # optional
+    capacity_query: |
+      sum(node_memory_MemAvailable_bytes)
+```
+
+- **Templating** reuses the same Jinja2 mechanism naas-api already uses for
+  its manifest generation — no new templating dependency. The template
+  context includes at least `cluster_id`; exposing the full cluster entry
+  (`region`, `environment`, `labels`, ...) so more advanced queries can key
+  off them is a natural extension, not a redesign.
+- **`name` is a glob pattern on the cluster `id`, nothing else** — no
+  region/environment/provider/label matching here, deliberately: cluster
+  ids already follow the fleet's own naming convention (`CAS-ELE-*`,
+  `CAS-DEV-*`, ...), so matching on the name is enough to group clusters
+  without pulling §6's full criteria-matching engine into telemetry config.
+  Standard glob semantics (`*`/`?`, e.g. Python's `fnmatch`) — no wildcard
+  in the pattern means an exact-id match.
+- **Evaluated top to bottom, first match wins** — a cluster can match more
+  than one entry, so list order is significant, same convention as
+  firewall/ingress rule lists: put more specific patterns first if they
+  need to win over a broader one below them. Every field
+  (`prometheus_url`, `username`, `password`, `capacity_query`) is looked up
+  independently — a matching entry only needs to set what it's changing,
+  falling back to the top-level value for anything it omits.
+- **`username`/`password` are both optional, at every level.** Left unset
+  (top-level or within an override), the query for that cluster goes out
+  with no `Authorization` header — Prometheus queried unauthenticated is
+  still the default; setting credentials is opt-in, and each naming group
+  can have entirely different ones (or none) independent of the fleet
+  default. (A prior version of this design routed credentials through a
+  separate `prometheus_auth_file`, split from the query config to keep
+  secrets out of a ConfigMap — simplified here to inline fields instead,
+  which is why the whole file now needs to be Secret-mounted rather than
+  living in a ConfigMap.)
+- **One global query is the common case** — it only works cleanly when
+  every cluster's Prometheus (or a federated view across them) exposes the
+  same metric names and a consistent `cluster` label. `overrides` exists
+  for the fleet not being that uniform, without forcing every cluster to
+  repeat the same query. This is the concrete answer to §17's still-open
+  "one fleet-wide Prometheus vs. per-cluster/federated" question: both are
+  supported — `overrides` is what makes per-cluster (or per-naming-group)
+  instances workable, `prometheus_url` alone is enough for a single
+  fleet-wide one.
+- **Result interpretation** — the provider executes the rendered query
+  against Prometheus's instant-query HTTP API (`/api/v1/query`) and takes
+  the first sample's value as the headroom number. naas-discovery treats it
+  as an opaque number compared against `CLUSTER_CAPACITY_THRESHOLD` (§5/§7)
+  — the query author decides what it means (bytes free, a percentage,
+  whatever), naas-discovery doesn't need semantic knowledge of it.
+- **Reachability failures** (timeout, non-2xx, unparseable response) are
+  what `CLUSTER_TELEMETRY_FAILURE_POLICY` (§7) governs — this section is
+  only about how a *successful* query is built and read.
 
 When enabled, this module feeds into §7's ranking as the telemetry signal —
 gating priority (`mode=hybrid`, `precedence=priority`, the default) or
 driving the ranking directly (`mode=metrics`, or `mode=hybrid` with
 `precedence=telemetry`), depending on the configured mode/precedence. See
 §7 for what happens if this module is enabled but its backend can't be
-reached (`APP_TELEMETRY_FAILURE_POLICY`).
+reached (`CLUSTER_TELEMETRY_FAILURE_POLICY`).
 
 ## 9. Health module (pluggable)
 
@@ -403,11 +492,12 @@ telemetry (§8):
 
 - A `HealthChecker` interface: given a cluster, report whether it's
   currently healthy.
-- `HttpHealthChecker` **(default)** — calls `GET {cluster.endpoint}/healthz`
-  (every naas-api instance already exposes this, and it's unauthenticated —
-  same as naas-api's own probes, so no credentials are needed to check
-  another cluster's health) with a timeout
-  (`APP_HEALTH_CHECK_TIMEOUT_SECONDS`); a `2xx` response within the timeout
+- `HttpHealthChecker` **(default)** — calls `GET` on the cluster's
+  `healthz_endpoint` (§2), or `{endpoint}/healthz` when that field isn't
+  set (every naas-api instance already exposes this, and it's
+  unauthenticated — same as naas-api's own probes, so no credentials are
+  needed to check another cluster's health) with a timeout
+  (`CLUSTER_HEALTH_CHECK_TIMEOUT_SECONDS`); a `2xx` response within the timeout
   means healthy.
 - `NoopHealthChecker` — the `none` override; every cluster is treated as
   healthy, i.e. health-check filtering is effectively off (useful for local
@@ -419,7 +509,7 @@ cluster's `/healthz` synchronously on every `GET /clusters` call would add
 N network round-trips — and their latency and failure modes — to every
 request. So, same pattern as naas-api's own `app/services/cache.py`: a
 background task polls every `enabled` cluster's health every
-`APP_CLUSTER_HEALTH_CHECK_INTERVAL_SECONDS` and keeps an in-memory
+`CLUSTER_HEALTH_CHECK_INTERVAL_SECONDS` and keeps an in-memory
 `cluster_id -> healthy` map; `GET /clusters` just reads that cache. Same
 "single worker" caveat as naas-api's cache (Dockerfile note, §13): the
 poller must not run once per uvicorn worker inside the pod — one process
@@ -433,7 +523,7 @@ priority, it's **absent from `items` entirely**.
 
 **No separate failure-policy setting — this module is simply on or off.**
 Unlike §7/§8's telemetry, which has a dial for what to do on failure
-(`APP_TELEMETRY_FAILURE_POLICY`), health checking has only one behavior
+(`CLUSTER_TELEMETRY_FAILURE_POLICY`), health checking has only one behavior
 when it's on: a cluster with **no confirmed-healthy status** — whether the
 poller hasn't reached it yet, or its last check errored instead of cleanly
 reporting up/down — is **always excluded**. There's nothing to configure
@@ -441,14 +531,14 @@ because there's only one safe answer: this module exists specifically to
 stop an unconfirmed cluster from being recommended, so "unconfirmed" and
 "unhealthy" are treated the same, always. If this filtering isn't wanted at
 all — local dev against fixtures with no real naas-api, for instance — the
-whole module is turned off via `APP_HEALTH_MODULE=none` (§5); there is no
+whole module is turned off via `CLUSTER_HEALTH_MODULE=none` (§5); there is no
 in-between "on, but permissive" mode.
 
 **§3.2 (`GET /clusters/{id}`) is unaffected by this filter** — see §3.2:
 a direct lookup by known id still returns the entry regardless of health,
 with a `healthy` field reflecting the cache's last-known status.
 
-Selected via `APP_HEALTH_MODULE` (§5), same name-keyed-registry pattern as
+Selected via `CLUSTER_HEALTH_MODULE` (§5), same name-keyed-registry pattern as
 auth (§10) and telemetry (§8).
 
 ## 10. Authentication — reused from naas-api
@@ -457,7 +547,7 @@ Same HTTP Basic module as naas-api, not a re-implementation: `Principal`,
 `AuthError`, `BasicAuth` (constant-time password comparison via
 `hmac.compare_digest`, `WWW-Authenticate` challenge, OpenAPI `basicAuth`
 scheme for the Swagger Authorize button), and the same `AUTH_MODULES`
-name → factory registry pattern selected via `APP_AUTH_MODULE`.
+name → factory registry pattern selected via `CLUSTER_AUTH_MODULE`.
 
 Concretely: naas-api's `app/auth/base.py`, `app/auth/basic.py`, and
 `app/auth/__init__.py` (~80 lines total, no naas-api-specific dependencies)
@@ -471,9 +561,9 @@ later wants one source of truth instead of two copies kept in sync by hand
 
 naas-api's `BasicAuth` module is constructed from a plain `{"user": "pass"}`
 dict (`settings.basic_auth_users`) — it doesn't care where that dict came
-from. Today that dict is populated from `APP_BASIC_AUTH_USERS`, a JSON
+from. Today that dict is populated from `CLUSTER_BASIC_AUTH_USERS`, a JSON
 *string* env var. naas-discovery adds a second source for the same dict:
-**`APP_BASIC_AUTH_USERS_FILE`**, a path to a **YAML** file holding the same
+**`CLUSTER_BASIC_AUTH_USERS_FILE`**, a path to a **YAML** file holding the same
 shape, e.g.:
 
 ```yaml
@@ -485,7 +575,7 @@ opbox: another-password
 — more readable/editable by hand than a one-line JSON blob, and consistent
 with every other config file in this project (§2's `clusters.yaml`) being
 YAML rather than JSON. If set, the file is read at startup and takes
-precedence over `APP_BASIC_AUTH_USERS`; if unset, behavior is unchanged
+precedence over `CLUSTER_BASIC_AUTH_USERS`; if unset, behavior is unchanged
 (env var, `{}` default). This only touches `app/core/config.py` (how the
 dict is assembled before being handed to `BasicAuth`) — `BasicAuth` itself,
 in `app/auth/basic.py`, doesn't change; it still just gets a `dict`.
@@ -528,7 +618,7 @@ naas-discovery/
     telemetry/                 §8
       base.py                   CapacityProvider interface
       noop.py
-      prometheus.py
+      prometheus.py              renders capacity_query (Jinja2) + queries Prometheus
       native_api.py
     health/                     §9
       base.py                   HealthChecker interface
@@ -537,6 +627,9 @@ naas-discovery/
       cache.py                  background poller + in-memory status map
   config/
     clusters.yaml               now also carries each cluster's `priority` (§7)
+  secrets/                       gitignored — never committed
+    basic-auth-users.yaml         (§10)
+    telemetry.yaml                Prometheus URL + capacity_query template + overrides + optional creds (§8)
   helm/
     naas-discovery/            §12
   docs/
@@ -562,24 +655,34 @@ serviceaccount,_helpers.tpl,NOTES.txt}.yaml`), with these differences:
   needs no cross-replica coordination.
 - **No RBAC / cluster-facing ServiceAccount permissions** by default — this
   service doesn't talk to the Kubernetes API of the cluster it runs on,
-  unlike naas-api. That could change if the Prometheus module (§8) needs an
-  in-cluster service-account token to reach a co-located Prometheus —
-  depends on the "one Prometheus vs. per-cluster" open question in §17.
+  unlike naas-api. That could change if a co-located Prometheus (§8) turns
+  out to need an in-cluster service-account token rather than the
+  `username`/`password` fields in `telemetry.yaml` — see §17.
 - **Egress** — §9's health module (on by default) needs outbound network
   reachability from naas-discovery to every enabled cluster's naas-api
   endpoint (`/healthz`). If the namespace's default NetworkPolicy blocks
   egress, this chart needs to ship one allowing it — worth confirming
   alongside the RBAC question above (§17).
-- **ConfigMap** mounts `clusters.yaml` as a file (not flattened into env
-  vars, since it's structured YAML) at the path from §5.
-- **Secret** — unlike naas-api's `secretRef` (flattened into env vars), the
-  Basic Auth users Secret here is mounted as a **volume**, at the path
-  `APP_BASIC_AUTH_USERS_FILE` points to (e.g.
-  `/etc/naas-discovery/secrets/basic-auth-users.yaml`) — see §10 for why.
-  `values.yaml` still takes `auth.basicUsers` as a map at install time
+- **ConfigMap** mounts `clusters.yaml` (§2) as a file (not flattened into
+  env vars, since it's structured YAML) at the path from §5. Nothing
+  sensitive lives here.
+- **Secret** — unlike naas-api's `secretRef` (flattened into env vars),
+  every credential-bearing file here is mounted as a **volume**, not an
+  env var:
+  - the Basic Auth users Secret, at the path `CLUSTER_BASIC_AUTH_USERS_FILE`
+    points to (e.g. `/etc/naas-discovery/secrets/basic-auth-users.yaml`) —
+    see §10 for why;
+  - `telemetry.yaml` (§8) itself, at `CLUSTER_TELEMETRY_CONFIG_PATH`, only
+    rendered when `telemetry_module=prometheus` — a Secret rather than a
+    ConfigMap specifically because it can carry inline `username`/
+    `password` fields, even though most of its content (the PromQL query)
+    isn't sensitive.
+
+  `values.yaml` still takes `auth.basicUsers` and `telemetry.config` as
+  maps/blocks at install time
   (`--set-json 'auth.basicUsers={"admin":"..."}'`, same UX as naas-api);
-  the chart renders it into the Secret's file content instead of into env
-  vars.
+  the chart renders each into its Secret's file content instead of into
+  env vars.
 - **Ingress/Route** — same either/or pattern as naas-api (enable at most
   one).
 
@@ -594,14 +697,16 @@ serviceaccount,_helpers.tpl,NOTES.txt}.yaml`), with these differences:
 - **docker-compose.yml** — an `app` service for local runs against a
   bind-mounted `config/clusters.yaml` and a bind-mounted local users file
   (e.g. `secrets/basic-auth-users.yaml`, gitignored, with
-  `APP_BASIC_AUTH_USERS_FILE` pointed at its mount path) so local dev
+  `CLUSTER_BASIC_AUTH_USERS_FILE` pointed at its mount path) so local dev
   matches the file-based Secret used in Helm, plus a `tests` service
   mirroring naas-api's bind-mounted pytest runner
   (`docker compose run --rm tests`). If the Prometheus module is being
-  exercised locally, a local Prometheus (or a lightweight mock exposing the
-  same query API) can be added as a third compose service — deferred until
-  §8 is actually built. For local runs against fixture clusters that don't
-  run a real naas-api, set `APP_HEALTH_MODULE=none` so §9's default health
+  exercised locally, bind-mount a local `secrets/telemetry.yaml` (§8,
+  gitignored like the users file above — it may carry `username`/
+  `password`); a local Prometheus (or a lightweight mock exposing the same
+  query API) can be added as a third compose service — deferred until §8
+  is actually built. For local runs against fixture clusters that don't
+  run a real naas-api, set `CLUSTER_HEALTH_MODULE=none` so §9's default health
   filtering doesn't just exclude everything.
 
 ## 14. Observability
@@ -631,25 +736,29 @@ errored/timed out — both are excluded the same way, see §9).
   provisioning decisions downstream (via naas-api on the returned endpoint)
   — log every such request/response (§14) as the audit trail, including
   which basis (priority/metrics) produced the recommendation.
-- `APP_TELEMETRY_FAILURE_POLICY` (§5/§7) controls what happens when the
+- `CLUSTER_TELEMETRY_FAILURE_POLICY` (§5/§7) controls what happens when the
   telemetry backend is unreachable, default `fail_open` — see §7 for the
   full rationale. This is specific to §7/§8's ranking; §9's health module
   is unrelated and has no equivalent setting (see next point).
 - §9's health module has **no failure-policy setting** — it's a binary
-  on/off (`APP_HEALTH_MODULE`), and while on, an unconfirmed-healthy
+  on/off (`CLUSTER_HEALTH_MODULE`), and while on, an unconfirmed-healthy
   cluster is always excluded, never configurable to "include anyway." See
   §9 for why that's the one safe answer here.
 - §9's health checks are plain, unauthenticated outbound HTTP requests to
   other clusters' `/healthz` — nothing sensitive is sent or exposed by the
   check itself, but see §12's Egress/NetworkPolicy note for what it
   requires from the network.
+- §8's `telemetry.yaml` can hold real credentials (`username`/`password`,
+  optional) alongside the PromQL query — mount the **whole file** from a
+  Secret, same as §10's Basic Auth users file, never as a ConfigMap, even
+  though most of its content (the query itself) isn't sensitive.
 
 ## 16. Testing strategy
 
 Mirrors naas-api's fake-based approach:
 - **Unit** — registry matching (§6) against a fixture `clusters.yaml`;
   recommendation ranking (§7) for each `mode`/`precedence` combination,
-  including `APP_TELEMETRY_FAILURE_POLICY` behavior and the random
+  including `CLUSTER_TELEMETRY_FAILURE_POLICY` behavior and the random
   tie-break (statistical — assert every tied candidate shows up as the
   recommendation across many repeated calls, not just one); each telemetry
   provider (§8) against a fake Prometheus/native-API client; each health
@@ -671,20 +780,25 @@ Mirrors naas-api's fake-based approach:
 1. **Exact meaning of the `enabled` boolean** (§2) — is it the full extent
    of the "yes/no" field you mentioned, or is there a second boolean
    (e.g. "accepts new namespaces" separate from "cluster exists/is up")?
-2. **`APP_CAPACITY_THRESHOLD` default** — the reconciliation mechanism
+2. **`CLUSTER_CAPACITY_THRESHOLD` default** — the reconciliation mechanism
    itself is decided (§7: `mode`/`precedence`, priority wins by default);
    what's still open is the actual headroom cutoff the priority-precedence
    gate should use once §8 exists.
-3. **Telemetry/PromQL schema** — one fleet-wide Prometheus vs.
-   per-cluster/federated instances; exact query template shape. Explicitly
-   deferred by you to a later discussion.
+3. **Actual `capacity_query` content** — the mechanism is now decided
+   (§8: `telemetry.yaml`, Jinja2 template, optional per-cluster
+   `overrides` matched by cluster-name glob, optional inline
+   `username`/`password`); what's still open is the real PromQL query
+   itself — which metric represents "headroom" for this fleet's Prometheus
+   setup, and whether `username`/`password` (Basic Auth) covers every
+   cluster's Prometheus or some need bearer-token auth instead (dropped
+   from this design for simplicity — worth confirming it's not needed).
 4. **`GET /clusters` verb** — stay with `GET` + query params, or move to
    `POST` + JSON body once filters (or the recommendation inputs) get more
    complex/nested (e.g. multiple label requirements)?
 5. **Auth module packaging** — keep as a vendored copy in each repo
    (recommended for now, §10) or extract to a shared internal package once
    there's a second consumer to justify the overhead? Also: should the new
-   `APP_BASIC_AUTH_USERS_FILE` support (§10) be backported into naas-api's
+   `CLUSTER_BASIC_AUTH_USERS_FILE` support (§10) be backported into naas-api's
    copy of the module too, so both stay in sync?
 6. **RBAC/ServiceAccount and Egress need** — depends on where Prometheus
    ends up living relative to this service (§12); separately, whether
@@ -704,7 +818,7 @@ Mirrors naas-api's fake-based approach:
    real deployment (no ingress-level auth in front of it) — otherwise the
    health module would need per-cluster credentials too, which it
    currently doesn't have a way to carry.
-10. **`APP_HEALTH_MODULE` default of `http` (on)** (§9) — this is the one
+10. **`CLUSTER_HEALTH_MODULE` default of `http` (on)** (§9) — this is the one
     module in the design that defaults *on* rather than `none`, since you
     asked for it as protective default behavior; flagging the asymmetry
     with telemetry's default-off posture in case that's not intended.
@@ -722,8 +836,8 @@ Mirrors naas-api's fake-based approach:
    + Helm chart + Compose.
 2. **Telemetry module + hybrid gating.** `CapacityProvider` interface +
    `Prometheus` implementation, wired into §7's `hybrid`/`priority`-
-   precedence gate once `APP_CAPACITY_THRESHOLD` (§17.2) is set;
-   `APP_TELEMETRY_FAILURE_POLICY` exercised here too.
+   precedence gate once `CLUSTER_CAPACITY_THRESHOLD` (§17.2) is set;
+   `CLUSTER_TELEMETRY_FAILURE_POLICY` exercised here too.
 3. **Extensibility + hardening.** First-class support for additional
    filters beyond region/environment (team, etc.) via the generic `labels`
    model (§6); `native_api` telemetry provider; startup config validation.
